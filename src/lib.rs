@@ -48,8 +48,10 @@
     clippy::items_after_statements,
     clippy::must_use_candidate,
     clippy::needless_doctest_main,
-    clippy::unreadable_literal
+    clippy::unreadable_literal,
+    incomplete_features
 )]
+#![feature(const_trait_impl)]
 
 mod u128_ext;
 
@@ -69,42 +71,57 @@ use no_panic::no_panic;
 /// let printed = buffer.format(1234);
 /// assert_eq!(printed, "1234");
 /// ```
-pub struct Buffer {
-    bytes: [MaybeUninit<u8>; i128::MAX_STR_LEN],
+pub struct Buffer<M: Integer = i128> {
+    bytes: M::Buffer,
 }
 
-impl Default for Buffer {
+impl<M: Integer> Default for Buffer<M> {
     #[inline]
-    fn default() -> Buffer {
-        Buffer::new()
+    fn default() -> Buffer<M> {
+        Buffer::new_with()
     }
 }
 
-impl Copy for Buffer {}
+impl<M: Integer> Copy for Buffer<M> {}
 
 #[allow(clippy::non_canonical_clone_impl)]
-impl Clone for Buffer {
+impl<M: Integer> Clone for Buffer<M> {
     #[inline]
     fn clone(&self) -> Self {
-        Buffer::new()
+        const { Buffer::new_with() }
     }
 }
 
-impl Buffer {
+impl Buffer<i128> {
     /// This is a cheap operation; you don't need to worry about reusing buffers
     /// for efficiency.
     #[inline]
     #[cfg_attr(feature = "no-panic", no_panic)]
-    pub fn new() -> Buffer {
-        let bytes = [MaybeUninit::<u8>::uninit(); i128::MAX_STR_LEN];
-        Buffer { bytes }
+    pub fn new() -> Buffer<i128> {
+        Buffer {
+            bytes: const { [MaybeUninit::<u8>::uninit(); i128::MAX_STR_LEN] },
+        }
+    }
+}
+
+impl<M: Integer> Buffer<M> {
+    /// This is a cheap operation; you don't need to worry about reusing buffers
+    /// for efficiency.
+    #[inline]
+    #[cfg_attr(feature = "no-panic", no_panic)]
+    pub const fn new_with() -> Buffer<M> {
+        Buffer { bytes: M::buffer() }
     }
 
     /// Print an integer into this buffer and return a reference to its string
     /// representation within the buffer.
     #[cfg_attr(feature = "no-panic", no_panic)]
-    pub fn format<I: Integer>(&mut self, i: I) -> &str {
-        let buf_ptr = self.bytes.as_mut_ptr().cast::<I::Buffer>();
+    pub fn format<I: Integer>(&mut self, i: I) -> &str
+    where
+        // Ensure that the buffer for M is at least as large as the buffer for I.
+        M: SufficientBuffer<I>,
+    {
+        let buf_ptr = <M as private::Buffer>::as_mut_ptr(&mut self.bytes).cast::<I::Buffer>();
         let string = i.write(unsafe { &mut *buf_ptr });
         if string.len() > I::MAX_STR_LEN {
             unsafe { hint::unreachable_unchecked() };
@@ -113,10 +130,40 @@ impl Buffer {
     }
 }
 
+pub trait SufficientBuffer<Other> {}
+
+macro_rules! impl_ge {
+    ($A:ty [$($(#[$ptr_w:literal $(| $or_ptr_w:literal)*])?$B:ty)*]) => {
+        $(
+            $(#[cfg(any(target_pointer_width = $ptr_w $(, target_pointer_width = $or_ptr_w)*))])?
+            impl SufficientBuffer<$B> for $A {}
+            $(#[cfg(any(target_pointer_width = $ptr_w $(, target_pointer_width = $or_ptr_w)*))])?
+            const _: () = {
+                let size_a = size_of::<<$A as private::Buffer>::Buffer>();
+                let size_b = size_of::<<$B as private::Buffer>::Buffer>();
+                assert!(size_a >= size_b, stringify!($A >= $B));
+            };
+        )*
+    };
+}
+
+impl_ge!(i128 [usize isize u128 i128 u64 i64 u32 i32 u16 i16 u8 i8]);
+impl_ge!(u128 [usize isize u128 u64 i64 u32 i32 u16 i16 u8 i8]);
+impl_ge!(i64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
+impl_ge!(u64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
+impl_ge!(i32 [#["32"] usize #["32"] isize u32 i32 u16 i16 u8 i8]);
+impl_ge!(u32 [#["32"] usize #["32"] isize u32 u16 i16 u8 i8]);
+impl_ge!(i16 [#["16"] usize #["16"] isize u16 i16 u8 i8]);
+impl_ge!(u16 [#["16"] usize #["16"] isize u16 u8 i8]);
+impl_ge!(i8 [u8 i8]);
+impl_ge!(u8[u8]);
+impl_ge!(isize [usize isize #["64"] i64 #["64"] u64 #["64" | "32"] i32 #["64" | "32"] u32 #["64" | "32" |"16"] i16 #["64" | "32" |"16"] u16 i8 u8]);
+impl_ge!(usize [isize usize #["64"] i64 #["64"] u64 #["64" | "32"] i32 #["64" | "32"] u32 #["64" | "32" |"16"] i16 #["64" | "32" |"16"] u16 i8 u8]);
+
 /// An integer that can be written into an [`itoa::Buffer`][Buffer].
 ///
 /// This trait is sealed and cannot be implemented for types outside of itoa.
-pub trait Integer: private::Sealed {
+pub const trait Integer: private::Sealed {
     /// The maximum length of string that formatting an integer of this type can
     /// produce on the current target platform.
     const MAX_STR_LEN: usize;
@@ -125,10 +172,20 @@ pub trait Integer: private::Sealed {
 // Seal to prevent downstream implementations of the Integer trait.
 mod private {
     #[doc(hidden)]
-    pub trait Sealed: Copy {
-        #[doc(hidden)]
-        type Buffer: 'static;
+    pub trait Sealed: Copy + const Buffer {
         fn write(self, buf: &mut Self::Buffer) -> &str;
+    }
+
+    #[doc(hidden)]
+    pub const trait Buffer: Copy {
+        #[doc(hidden)]
+        type Buffer: Copy + 'static;
+
+        #[doc(hidden)]
+        fn buffer() -> Self::Buffer;
+
+        #[doc(hidden)]
+        fn as_mut_ptr(buf: &mut Self::Buffer) -> *mut super::MaybeUninit<u8>;
     }
 }
 
@@ -140,13 +197,11 @@ macro_rules! impl_Integer {
             assert!($Signed::BITS == $Unsigned::BITS, "need counterparts");
         };
 
-        impl Integer for $Unsigned {
+        impl const Integer for $Unsigned {
             const MAX_STR_LEN: usize = $Unsigned::MAX.ilog10() as usize + 1;
         }
 
         impl private::Sealed for $Unsigned {
-            type Buffer = [MaybeUninit<u8>; Self::MAX_STR_LEN];
-
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &str {
@@ -156,13 +211,25 @@ macro_rules! impl_Integer {
             }
         }
 
-        impl Integer for $Signed {
+        impl const private::Buffer for $Unsigned {
+            type Buffer = [MaybeUninit<u8>; Self::MAX_STR_LEN];
+
+            #[inline]
+            fn buffer() -> Self::Buffer {
+                [MaybeUninit::uninit(); Self::MAX_STR_LEN]
+            }
+
+            #[inline]
+            fn as_mut_ptr(buf: &mut Self::Buffer) -> *mut MaybeUninit<u8> {
+                buf.as_mut_ptr()
+            }
+        }
+
+        impl const Integer for $Signed {
             const MAX_STR_LEN: usize = $Signed::MAX.ilog10() as usize + 2;
         }
 
         impl private::Sealed for $Signed {
-            type Buffer = [MaybeUninit<u8>; Self::MAX_STR_LEN];
-
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &str {
@@ -177,6 +244,20 @@ macro_rules! impl_Integer {
                 }
                 // SAFETY: Starting from `offset`, all elements of the slice have been set.
                 unsafe { slice_buffer_to_str(buf, offset) }
+            }
+        }
+
+        impl const private::Buffer for $Signed {
+            type Buffer = [MaybeUninit<u8>; Self::MAX_STR_LEN];
+
+            #[inline]
+            fn buffer() -> Self::Buffer {
+                [MaybeUninit::uninit(); Self::MAX_STR_LEN]
+            }
+
+            #[inline]
+            fn as_mut_ptr(buf: &mut Self::Buffer) -> *mut MaybeUninit<u8> {
+                buf.as_mut_ptr()
             }
         }
     };
@@ -197,12 +278,25 @@ macro_rules! impl_Integer_size {
 
         #[cfg(target_pointer_width = $width)]
         impl private::Sealed for $t {
-            type Buffer = <$primitive as private::Sealed>::Buffer;
-
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &str {
                 (self as $primitive).write(buf)
+            }
+        }
+
+        #[cfg(target_pointer_width = $width)]
+        impl const private::Buffer for $t {
+            type Buffer = <$primitive as private::Buffer>::Buffer;
+
+            #[inline]
+            fn buffer() -> Self::Buffer {
+                <$primitive as private::Buffer>::buffer()
+            }
+
+            #[inline]
+            fn as_mut_ptr(buf: &mut Self::Buffer) -> *mut MaybeUninit<u8> {
+                buf.as_mut_ptr()
             }
         }
     };
@@ -228,7 +322,7 @@ static DECIMAL_PAIRS: DecimalPairs = DecimalPairs(
 );
 
 // Returns {value / 100, value % 100} correct for values of up to 4 digits.
-fn divmod100(value: u32) -> (u32, u32) {
+const fn divmod100(value: u32) -> (u32, u32) {
     debug_assert!(value < 10_000);
     const EXP: u32 = 19; // 19 is faster or equal to 12 even for 3 digits.
     const SIG: u32 = (1 << EXP) / 100 + 1;
@@ -252,7 +346,7 @@ unsafe fn slice_buffer_to_str(buf: &[MaybeUninit<u8>], offset: usize) -> &str {
     unsafe { str::from_utf8_unchecked(&*(written as *const [MaybeUninit<u8>] as *const [u8])) }
 }
 
-trait Unsigned: Integer {
+const trait Unsigned: Integer {
     fn fmt(self, buf: &mut Self::Buffer) -> usize;
 }
 
