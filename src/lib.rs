@@ -130,13 +130,13 @@ impl<M: Integer> Buffer<M> {
     }
 }
 
-pub trait SufficientBuffer<Other> {}
+pub const trait SufficientBuffer<Other: Integer>: Integer {}
 
 macro_rules! impl_ge {
     ($A:ty [$($(#[$ptr_w:literal $(| $or_ptr_w:literal)*])?$B:ty)*]) => {
         $(
             $(#[cfg(any(target_pointer_width = $ptr_w $(, target_pointer_width = $or_ptr_w)*))])?
-            impl SufficientBuffer<$B> for $A {}
+            impl const SufficientBuffer<$B> for $A {}
             $(#[cfg(any(target_pointer_width = $ptr_w $(, target_pointer_width = $or_ptr_w)*))])?
             const _: () = {
                 let size_a = size_of::<<$A as private::Buffer>::Buffer>();
@@ -147,7 +147,8 @@ macro_rules! impl_ge {
     };
 }
 
-impl_ge!(i128 [usize isize u128 i128 u64 i64 u32 i32 u16 i16 u8 i8]);
+// i128::MAX_STR_LEN can hold every integer's string representation, thus this blanket implementation is sufficient for all integers.
+impl<I: Integer> const SufficientBuffer<I> for i128 {}
 impl_ge!(u128 [usize isize u128 u64 i64 u32 i32 u16 i16 u8 i8]);
 impl_ge!(i64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
 impl_ge!(u64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
@@ -173,6 +174,7 @@ pub const trait Integer: private::Sealed {
 mod private {
     #[doc(hidden)]
     pub trait Sealed: Copy + const Buffer {
+        #[doc(hidden)]
         fn write(self, buf: &mut Self::Buffer) -> &str;
     }
 

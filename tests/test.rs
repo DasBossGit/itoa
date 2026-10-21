@@ -62,3 +62,9 @@ fn test_max_str_len() {
     assert_eq!(i128::MAX_STR_LEN, 40);
     assert_eq!(u128::MAX_STR_LEN, 39);
 }
+
+fn test_generic(value: impl itoa::Integer, expected: &str) {
+    let mut buffer = itoa::Buffer::<u64>::new_with();
+    let s = buffer.format(value);
+    assert_eq!(s, expected);
+}
