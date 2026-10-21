@@ -1,11 +1,11 @@
 #![allow(non_snake_case)]
 
 macro_rules! test {
-    ($($name:ident($value:expr, $expected:expr))*) => {
+    ($($name:ident($value:expr, $expected:expr, $ty:ty))*) => {
         $(
             #[test]
             fn $name() {
-                let mut buffer = itoa::Buffer::new();
+                let mut buffer = itoa::Buffer::<$ty>::new_with();
                 let s = buffer.format($value);
                 assert_eq!(s, $expected);
             }
@@ -13,19 +13,38 @@ macro_rules! test {
     }
 }
 
-test! {
-    test_u64_0(0u64, "0")
-    test_u64_half(u64::from(u32::MAX), "4294967295")
-    test_u64_max(u64::MAX, "18446744073709551615")
-    test_i64_min(i64::MIN, "-9223372036854775808")
+mod default {
+    test! {
+        test_u64_0(0u64, "0", i128)
+        test_u64_half(u64::from(u32::MAX), "4294967295", i128)
+        test_u64_max(u64::MAX, "18446744073709551615", i128)
+        test_i64_min(i64::MIN, "-9223372036854775808", i128)
 
-    test_i16_0(0i16, "0")
-    test_i16_min(i16::MIN, "-32768")
+        test_i16_0(0i16, "0", i128)
+        test_i16_min(i16::MIN, "-32768", i128)
 
-    test_u128_0(0u128, "0")
-    test_u128_max(u128::MAX, "340282366920938463463374607431768211455")
-    test_i128_min(i128::MIN, "-170141183460469231731687303715884105728")
-    test_i128_max(i128::MAX, "170141183460469231731687303715884105727")
+        test_u128_0(0u128, "0", i128)
+        test_u128_max(u128::MAX, "340282366920938463463374607431768211455", i128)
+        test_i128_min(i128::MIN, "-170141183460469231731687303715884105728", i128)
+        test_i128_max(i128::MAX, "170141183460469231731687303715884105727", i128)
+    }
+}
+
+mod typed {
+    test! {
+        test_u64_0(0u64, "0", u64)
+        test_u64_half(u64::from(u32::MAX), "4294967295", u64)
+        test_u64_max(u64::MAX, "18446744073709551615", u64)
+        test_i64_min(i64::MIN, "-9223372036854775808", i64)
+
+        test_i16_0(0i16, "0", i16)
+        test_i16_min(i16::MIN, "-32768", i16)
+
+        test_u128_0(0u128, "0", u128)
+        test_u128_max(u128::MAX, "340282366920938463463374607431768211455", u128)
+        test_i128_min(i128::MIN, "-170141183460469231731687303715884105728", i128)
+        test_i128_max(i128::MAX, "170141183460469231731687303715884105727", i128)
+    }
 }
 
 #[test]
