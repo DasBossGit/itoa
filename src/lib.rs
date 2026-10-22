@@ -146,11 +146,25 @@ impl<M: Integer> Buffer<M> {
 ///
 /// Returns `Some(&str)` if the buffer is large enough to hold the integer's string representation,
 /// otherwise returns `None`.
+#[inline]
 #[cfg_attr(feature = "no-panic", no_panic)]
 pub fn format_into<'a, const N: usize, I: Integer>(buf: &'a mut [u8; N], i: I) -> Option<&'a str> {
     if const { N < I::MAX_STR_LEN } {
         return None;
     }
+    Some(unsafe { format_into_unchecked(buf, i) })
+}
+
+/// Format an integer into a fixed-size buffer without checking its size.
+#[cfg_attr(feature = "no-panic", no_panic)]
+pub unsafe fn format_into_unchecked<'a, const N: usize, I: Integer>(
+    buf: &'a mut [u8; N],
+    i: I,
+) -> &'a str {
+    debug_assert!(
+        N >= I::MAX_STR_LEN,
+        "Buffer is too small for the integer's string representation"
+    );
     // We can safely cast to I::Buffer because we checked that the buffer is at least as large as I::MAX_STR_LEN.
     let buf_ptr = buf
         .as_mut_ptr()
@@ -162,7 +176,7 @@ pub fn format_into<'a, const N: usize, I: Integer>(buf: &'a mut [u8; N], i: I) -
         // Even though we could return a None, this indicates a memory safety violation, thus continuing execution is undefined behavior.
         unsafe { hint::unreachable_unchecked() };
     }
-    Some(string)
+    string
 }
 
 pub const trait SufficientBuffer<Other: Integer>: Integer {}
