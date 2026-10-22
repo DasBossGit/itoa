@@ -55,6 +55,7 @@
 
 mod u128_ext;
 
+use ::core::hint::cold_path;
 use core::hint;
 use core::mem::{self, MaybeUninit};
 use core::str;
@@ -71,6 +72,7 @@ use no_panic::no_panic;
 /// let printed = buffer.format(1234);
 /// assert_eq!(printed, "1234");
 /// ```
+#[repr(transparent)]
 pub struct Buffer<M: Integer = i128> {
     bytes: M::Buffer,
 }
@@ -97,7 +99,7 @@ impl Buffer<i128> {
     /// for efficiency.
     #[inline]
     #[cfg_attr(feature = "no-panic", no_panic)]
-    pub fn new() -> Buffer<i128> {
+    pub const fn new() -> Buffer<i128> {
         Buffer {
             bytes: const { [MaybeUninit::<u8>::uninit(); i128::MAX_STR_LEN] },
         }
@@ -124,6 +126,7 @@ impl<M: Integer> Buffer<M> {
         let buf_ptr = <M as private::Buffer>::as_mut_ptr(&mut self.bytes).cast::<I::Buffer>();
         let string = i.write(unsafe { &mut *buf_ptr });
         if string.len() > I::MAX_STR_LEN {
+            cold_path();
             unsafe { hint::unreachable_unchecked() };
         }
         string
@@ -137,6 +140,29 @@ impl<M: Integer> Buffer<M> {
     pub fn as_mut_ptr(this: &mut Self) -> *mut M::Buffer {
         &mut this.bytes
     }
+}
+
+/// Format an integer into a fixed-size buffer.
+///
+/// Returns `Some(&str)` if the buffer is large enough to hold the integer's string representation,
+/// otherwise returns `None`.
+#[cfg_attr(feature = "no-panic", no_panic)]
+pub fn format_into<'a, const N: usize, I: Integer>(
+    buf: &'a mut [MaybeUninit<u8>; N],
+    i: I,
+) -> Option<&'a str> {
+    if const { N < I::MAX_STR_LEN } {
+        return None;
+    }
+    // We can safely cast to I::Buffer because we checked that the buffer is at least as large as I::MAX_STR_LEN.
+    let buf_ptr = buf.as_mut_ptr().cast::<I::Buffer>();
+    let string = i.write(unsafe { &mut *buf_ptr });
+    if string.len() > I::MAX_STR_LEN {
+        cold_path();
+        // Even though we could return a None, this indicates a memory safety violation, thus continuing execution is undefined behavior.
+        unsafe { hint::unreachable_unchecked() };
+    }
+    Some(string)
 }
 
 pub const trait SufficientBuffer<Other: Integer>: Integer {}
@@ -245,10 +271,9 @@ macro_rules! impl_Integer {
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &str {
                 let mut offset = Self::MAX_STR_LEN - $Unsigned::MAX_STR_LEN;
-                offset += Unsigned::fmt(
-                    self.unsigned_abs(),
-                    (&mut buf[offset..]).try_into().unwrap(),
-                );
+                offset += Unsigned::fmt(self.unsigned_abs(), unsafe {
+                    &mut *(&raw mut buf[offset..] as *mut [MaybeUninit<u8>; $Unsigned::MAX_STR_LEN])
+                });
                 if self < 0 {
                     offset -= 1;
                     buf[offset].write(b'-');
@@ -371,32 +396,32 @@ macro_rules! impl_Unsigned {
                 // Consume the least-significant decimals from a working copy.
                 let mut remain = self;
 
-                // Format per four digits from the lookup table.
-                // Four digits need a 16-bit $Unsigned or wider.
-                while mem::size_of::<Self>() > 1
-                    && remain
-                        > 999
-                            .try_into()
-                            .expect("branch is not hit for types that cannot fit 999 (u8)")
-                {
-                    offset -= 4;
+                if const { mem::size_of::<Self>() > 1 } {
+                    // Format per four digits from the lookup table.
+                    // Four digits need a 16-bit $Unsigned or wider.
 
-                    // pull two pairs
-                    let scale: Self = 1_00_00
-                        .try_into()
-                        .expect("branch is not hit for types that cannot fit 1E4 (u8)");
-                    let quad = remain % scale;
-                    remain /= scale;
-                    let (pair1, pair2) = divmod100(quad as u32);
-                    unsafe {
-                        buf[offset + 0]
-                            .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
-                        buf[offset + 1]
-                            .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 1));
-                        buf[offset + 2]
-                            .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 0));
-                        buf[offset + 3]
-                            .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1));
+                    // We can safely assume that remain fits at least four digits here as we checked
+                    // that Self is at least 16-bit wide, so it can hold four digits.
+                    #[allow(overflowing_literals, unused_comparisons)]
+                    while remain > 999 {
+                        offset -= 4;
+
+                        // pull two pairs
+                        // Safety: Same as `remain > 999`
+                        let scale: Self = 1_00_00;
+                        let quad = remain % scale;
+                        remain /= scale;
+                        let (pair1, pair2) = divmod100(quad as u32);
+                        unsafe {
+                            buf[offset + 0]
+                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
+                            buf[offset + 1]
+                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 1));
+                            buf[offset + 2]
+                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 0));
+                            buf[offset + 3]
+                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1));
+                        }
                     }
                 }
 
