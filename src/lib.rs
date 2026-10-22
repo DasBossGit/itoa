@@ -128,6 +128,15 @@ impl<M: Integer> Buffer<M> {
         }
         string
     }
+
+    /// Get a mutable pointer to the underlying buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the pointer is not used after the buffer is dropped.
+    pub fn as_mut_ptr(this: &mut Self) -> *mut M::Buffer {
+        &mut this.bytes
+    }
 }
 
 pub const trait SufficientBuffer<Other: Integer>: Integer {}
