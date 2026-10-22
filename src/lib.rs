@@ -124,6 +124,23 @@ impl<M: Integer> Buffer<M> {
         M: SufficientBuffer<I>,
     {
         let buf_ptr = <M as private::Buffer>::as_mut_ptr(&mut self.bytes).cast::<I::Buffer>();
+        let string = i.write(unsafe { &mut *buf_ptr }) as &str;
+        if string.len() > I::MAX_STR_LEN {
+            cold_path();
+            unsafe { hint::unreachable_unchecked() };
+        }
+        string
+    }
+
+    /// Print an integer into this buffer and return a reference to its string
+    /// representation within the buffer.
+    #[cfg_attr(feature = "no-panic", no_panic)]
+    pub fn format_mut<I: Integer>(this: &mut Self, i: I) -> &mut str
+    where
+        // Ensure that the buffer for M is at least as large as the buffer for I.
+        M: SufficientBuffer<I>,
+    {
+        let buf_ptr = <M as private::Buffer>::as_mut_ptr(&mut this.bytes).cast::<I::Buffer>();
         let string = i.write(unsafe { &mut *buf_ptr });
         if string.len() > I::MAX_STR_LEN {
             cold_path();
@@ -137,7 +154,7 @@ impl<M: Integer> Buffer<M> {
     /// # Safety
     ///
     /// The caller must ensure that the pointer is not used after the buffer is dropped.
-    pub fn as_mut_ptr(this: &mut Self) -> *mut M::Buffer {
+    pub const fn as_mut_ptr(this: &mut Self) -> *mut M::Buffer {
         &mut this.bytes
     }
 }
@@ -155,12 +172,37 @@ pub fn format_into<'a, const N: usize, I: Integer>(buf: &'a mut [u8; N], i: I) -
     Some(unsafe { format_into_unchecked(buf, i) })
 }
 
+/// Format an integer into a fixed-size buffer.
+///
+/// Returns `Some(&str)` if the buffer is large enough to hold the integer's string representation,
+/// otherwise returns `None`.
+#[inline]
+#[cfg_attr(feature = "no-panic", no_panic)]
+pub fn format_into_mut<'a, const N: usize, I: Integer>(
+    buf: &'a mut [u8; N],
+    i: I,
+) -> Option<&'a mut str> {
+    if const { N < I::MAX_STR_LEN } {
+        return None;
+    }
+    Some(unsafe { format_into_unchecked_mut(buf, i) })
+}
+
 /// Format an integer into a fixed-size buffer without checking its size.
 #[cfg_attr(feature = "no-panic", no_panic)]
 pub unsafe fn format_into_unchecked<'a, const N: usize, I: Integer>(
     buf: &'a mut [u8; N],
     i: I,
 ) -> &'a str {
+    unsafe { format_into_unchecked_mut(buf, i) }
+}
+
+/// Format an integer into a fixed-size buffer without checking its size.
+#[cfg_attr(feature = "no-panic", no_panic)]
+pub unsafe fn format_into_unchecked_mut<'a, const N: usize, I: Integer>(
+    buf: &'a mut [u8; N],
+    i: I,
+) -> &'a mut str {
     debug_assert!(
         N >= I::MAX_STR_LEN,
         "Buffer is too small for the integer's string representation"
@@ -224,7 +266,7 @@ mod private {
     #[doc(hidden)]
     pub trait Sealed: Copy + const Buffer {
         #[doc(hidden)]
-        fn write(self, buf: &mut Self::Buffer) -> &str;
+        fn write(self, buf: &mut Self::Buffer) -> &mut str;
     }
 
     #[doc(hidden)]
@@ -255,7 +297,7 @@ macro_rules! impl_Integer {
         impl private::Sealed for $Unsigned {
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
-            fn write(self, buf: &mut Self::Buffer) -> &str {
+            fn write(self, buf: &mut Self::Buffer) -> &mut str {
                 let offset = Unsigned::fmt(self, buf);
                 // SAFETY: Starting from `offset`, all elements of the slice have been set.
                 unsafe { slice_buffer_to_str(buf, offset) }
@@ -283,7 +325,7 @@ macro_rules! impl_Integer {
         impl private::Sealed for $Signed {
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
-            fn write(self, buf: &mut Self::Buffer) -> &str {
+            fn write(self, buf: &mut Self::Buffer) -> &mut str {
                 let mut offset = Self::MAX_STR_LEN - $Unsigned::MAX_STR_LEN;
                 offset += Unsigned::fmt(self.unsigned_abs(), unsafe {
                     &mut *(&raw mut buf[offset..] as *mut [MaybeUninit<u8>; $Unsigned::MAX_STR_LEN])
@@ -330,7 +372,7 @@ macro_rules! impl_Integer_size {
         impl private::Sealed for $t {
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
-            fn write(self, buf: &mut Self::Buffer) -> &str {
+            fn write(self, buf: &mut Self::Buffer) -> &mut str {
                 (self as $primitive).write(buf)
             }
         }
@@ -388,12 +430,12 @@ const fn divmod100(value: u32) -> (u32, u32) {
 /// `buf` content starting from `offset` index MUST BE initialized and MUST BE
 /// ascii characters.
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn slice_buffer_to_str(buf: &[MaybeUninit<u8>], offset: usize) -> &str {
+unsafe fn slice_buffer_to_str(buf: &mut [MaybeUninit<u8>], offset: usize) -> &mut str {
     // SAFETY: `offset` is always included between 0 and `buf`'s length.
-    let written = unsafe { buf.get_unchecked(offset..) };
+    let written = unsafe { buf.get_unchecked_mut(offset..) };
     // SAFETY: (`assume_init_ref`) All buf content since offset is set.
     // SAFETY: (`from_utf8_unchecked`) Writes use ASCII from the lookup table exclusively.
-    unsafe { str::from_utf8_unchecked(&*(written as *const [MaybeUninit<u8>] as *const [u8])) }
+    unsafe { str::from_utf8_unchecked_mut(&mut *(written as *mut [MaybeUninit<u8>] as *mut [u8])) }
 }
 
 const trait Unsigned: Integer {
