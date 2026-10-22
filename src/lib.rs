@@ -147,15 +147,15 @@ impl<M: Integer> Buffer<M> {
 /// Returns `Some(&str)` if the buffer is large enough to hold the integer's string representation,
 /// otherwise returns `None`.
 #[cfg_attr(feature = "no-panic", no_panic)]
-pub fn format_into<'a, const N: usize, I: Integer>(
-    buf: &'a mut [MaybeUninit<u8>; N],
-    i: I,
-) -> Option<&'a str> {
+pub fn format_into<'a, const N: usize, I: Integer>(buf: &'a mut [u8; N], i: I) -> Option<&'a str> {
     if const { N < I::MAX_STR_LEN } {
         return None;
     }
     // We can safely cast to I::Buffer because we checked that the buffer is at least as large as I::MAX_STR_LEN.
-    let buf_ptr = buf.as_mut_ptr().cast::<I::Buffer>();
+    let buf_ptr = buf
+        .as_mut_ptr()
+        .cast::<[MaybeUninit<u8>; N]>()
+        .cast::<I::Buffer>();
     let string = i.write(unsafe { &mut *buf_ptr });
     if string.len() > I::MAX_STR_LEN {
         cold_path();
