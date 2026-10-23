@@ -55,9 +55,10 @@
 
 mod u128_ext;
 
-use ::core::hint::cold_path;
+use ::core::{hint::cold_path, slice};
 use core::hint;
 use core::mem::{self, MaybeUninit};
+use core::ptr::copy_nonoverlapping;
 use core::str;
 #[cfg(feature = "no-panic")]
 use no_panic::no_panic;
@@ -118,10 +119,10 @@ impl<M: Integer> Buffer<M> {
     /// Print an integer into this buffer and return a reference to its string
     /// representation within the buffer.
     #[cfg_attr(feature = "no-panic", no_panic)]
-    pub fn format<I: Integer>(&mut self, i: I) -> &str
+    pub const fn format<I: const Integer>(&mut self, i: I) -> &str
     where
         // Ensure that the buffer for M is at least as large as the buffer for I.
-        M: SufficientBuffer<I>,
+        M: const SufficientBuffer<I>,
     {
         let buf_ptr = <M as private::Buffer>::as_mut_ptr(&mut self.bytes).cast::<I::Buffer>();
         let string = i.write(unsafe { &mut *buf_ptr }) as &str;
@@ -135,10 +136,10 @@ impl<M: Integer> Buffer<M> {
     /// Print an integer into this buffer and return a reference to its string
     /// representation within the buffer.
     #[cfg_attr(feature = "no-panic", no_panic)]
-    pub fn format_mut<I: Integer>(this: &mut Self, i: I) -> &mut str
+    pub const fn format_mut<I: const Integer>(this: &mut Self, i: I) -> &mut str
     where
         // Ensure that the buffer for M is at least as large as the buffer for I.
-        M: SufficientBuffer<I>,
+        M: const SufficientBuffer<I>,
     {
         let buf_ptr = <M as private::Buffer>::as_mut_ptr(&mut this.bytes).cast::<I::Buffer>();
         let string = i.write(unsafe { &mut *buf_ptr });
@@ -165,7 +166,10 @@ impl<M: Integer> Buffer<M> {
 /// otherwise returns `None`.
 #[inline]
 #[cfg_attr(feature = "no-panic", no_panic)]
-pub fn format_into<'a, const N: usize, I: Integer>(buf: &'a mut [u8; N], i: I) -> Option<&'a str> {
+pub const fn format_into<'a, const N: usize, I: const Integer>(
+    buf: &'a mut [u8; N],
+    i: I,
+) -> Option<&'a str> {
     if const { N < I::MAX_STR_LEN } {
         return None;
     }
@@ -178,7 +182,7 @@ pub fn format_into<'a, const N: usize, I: Integer>(buf: &'a mut [u8; N], i: I) -
 /// otherwise returns `None`.
 #[inline]
 #[cfg_attr(feature = "no-panic", no_panic)]
-pub fn format_into_mut<'a, const N: usize, I: Integer>(
+pub const fn format_into_mut<'a, const N: usize, I: const Integer>(
     buf: &'a mut [u8; N],
     i: I,
 ) -> Option<&'a mut str> {
@@ -190,7 +194,7 @@ pub fn format_into_mut<'a, const N: usize, I: Integer>(
 
 /// Format an integer into a fixed-size buffer without checking its size.
 #[cfg_attr(feature = "no-panic", no_panic)]
-pub unsafe fn format_into_unchecked<'a, const N: usize, I: Integer>(
+pub const unsafe fn format_into_unchecked<'a, const N: usize, I: const Integer>(
     buf: &'a mut [u8; N],
     i: I,
 ) -> &'a str {
@@ -199,7 +203,7 @@ pub unsafe fn format_into_unchecked<'a, const N: usize, I: Integer>(
 
 /// Format an integer into a fixed-size buffer without checking its size.
 #[cfg_attr(feature = "no-panic", no_panic)]
-pub unsafe fn format_into_unchecked_mut<'a, const N: usize, I: Integer>(
+pub const unsafe fn format_into_unchecked_mut<'a, const N: usize, I: const Integer>(
     buf: &'a mut [u8; N],
     i: I,
 ) -> &'a mut str {
@@ -221,7 +225,7 @@ pub unsafe fn format_into_unchecked_mut<'a, const N: usize, I: Integer>(
     string
 }
 
-pub const trait SufficientBuffer<Other: Integer>: Integer {}
+pub const trait SufficientBuffer<Other: const Integer>: const Integer {}
 
 macro_rules! impl_ge {
     ($A:ty [$($(#[$ptr_w:literal $(| $or_ptr_w:literal)*])?$B:ty)*]) => {
@@ -239,7 +243,7 @@ macro_rules! impl_ge {
 }
 
 // i128::MAX_STR_LEN can hold every integer's string representation, thus this blanket implementation is sufficient for all integers.
-impl<I: Integer> const SufficientBuffer<I> for i128 {}
+impl<I: const Integer> const SufficientBuffer<I> for i128 {}
 impl_ge!(u128 [usize isize u128 u64 i64 u32 i32 u16 i16 u8 i8]);
 impl_ge!(i64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
 impl_ge!(u64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
@@ -255,7 +259,7 @@ impl_ge!(usize [isize usize #["64"] i64 #["64"] u64 #["64" | "32"] i32 #["64" | 
 /// An integer that can be written into an [`itoa::Buffer`][Buffer].
 ///
 /// This trait is sealed and cannot be implemented for types outside of itoa.
-pub const trait Integer: private::Sealed {
+pub const trait Integer: const private::Sealed {
     /// The maximum length of string that formatting an integer of this type can
     /// produce on the current target platform.
     const MAX_STR_LEN: usize;
@@ -264,7 +268,7 @@ pub const trait Integer: private::Sealed {
 // Seal to prevent downstream implementations of the Integer trait.
 mod private {
     #[doc(hidden)]
-    pub trait Sealed: Copy + const Buffer {
+    pub const trait Sealed: Copy + const Buffer {
         #[doc(hidden)]
         fn write(self, buf: &mut Self::Buffer) -> &mut str;
     }
@@ -294,7 +298,7 @@ macro_rules! impl_Integer {
             const MAX_STR_LEN: usize = $Unsigned::MAX.ilog10() as usize + 1;
         }
 
-        impl private::Sealed for $Unsigned {
+        impl const private::Sealed for $Unsigned {
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &mut str {
@@ -322,14 +326,17 @@ macro_rules! impl_Integer {
             const MAX_STR_LEN: usize = $Signed::MAX.ilog10() as usize + 2;
         }
 
-        impl private::Sealed for $Signed {
+        impl const private::Sealed for $Signed {
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &mut str {
                 let mut offset = Self::MAX_STR_LEN - $Unsigned::MAX_STR_LEN;
-                offset += Unsigned::fmt(self.unsigned_abs(), unsafe {
-                    &mut *(&raw mut buf[offset..] as *mut [MaybeUninit<u8>; $Unsigned::MAX_STR_LEN])
-                });
+
+                let unsigned_buf = unsafe {
+                    &mut *(buf.as_mut_ptr().add(offset)
+                        as *mut [MaybeUninit<u8>; $Unsigned::MAX_STR_LEN])
+                };
+                offset += Unsigned::fmt(self.unsigned_abs(), unsigned_buf);
                 if self < 0 {
                     offset -= 1;
                     buf[offset].write(b'-');
@@ -364,12 +371,12 @@ impl_Integer!(i128, u128);
 macro_rules! impl_Integer_size {
     ($t:ty as $primitive:ident #[cfg(target_pointer_width = $width:literal)]) => {
         #[cfg(target_pointer_width = $width)]
-        impl Integer for $t {
+        impl const Integer for $t {
             const MAX_STR_LEN: usize = <$primitive as Integer>::MAX_STR_LEN;
         }
 
         #[cfg(target_pointer_width = $width)]
-        impl private::Sealed for $t {
+        impl const private::Sealed for $t {
             #[inline]
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn write(self, buf: &mut Self::Buffer) -> &mut str {
@@ -413,6 +420,13 @@ static DECIMAL_PAIRS: DecimalPairs = DecimalPairs(
        8081828384858687888990919293949596979899",
 );
 
+impl DecimalPairs {
+    #[inline]
+    const fn get_pair(&self, index: usize) -> &[u8; 2] {
+        unsafe { &*(self.0.as_ptr().add(index * 2) as *const [u8; 2]) }
+    }
+}
+
 // Returns {value / 100, value % 100} correct for values of up to 4 digits.
 const fn divmod100(value: u32) -> (u32, u32) {
     debug_assert!(value < 10_000);
@@ -430,12 +444,16 @@ const fn divmod100(value: u32) -> (u32, u32) {
 /// `buf` content starting from `offset` index MUST BE initialized and MUST BE
 /// ascii characters.
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn slice_buffer_to_str(buf: &mut [MaybeUninit<u8>], offset: usize) -> &mut str {
+const unsafe fn slice_buffer_to_str(buf: &mut [MaybeUninit<u8>], offset: usize) -> &mut str {
+    let len = buf.len();
+    let buf = buf.as_mut_ptr();
     // SAFETY: `offset` is always included between 0 and `buf`'s length.
-    let written = unsafe { buf.get_unchecked_mut(offset..) };
-    // SAFETY: (`assume_init_ref`) All buf content since offset is set.
-    // SAFETY: (`from_utf8_unchecked`) Writes use ASCII from the lookup table exclusively.
-    unsafe { str::from_utf8_unchecked_mut(&mut *(written as *mut [MaybeUninit<u8>] as *mut [u8])) }
+    unsafe {
+        let written = slice::from_raw_parts_mut(buf.add(offset) as *mut u8, len - offset);
+        // SAFETY: (`assume_init_ref`) All buf content since offset is set.
+        // SAFETY: (`from_utf8_unchecked`) Writes use ASCII from the lookup table exclusively.
+        str::from_utf8_unchecked_mut(written)
+    }
 }
 
 const trait Unsigned: Integer {
@@ -444,13 +462,16 @@ const trait Unsigned: Integer {
 
 macro_rules! impl_Unsigned {
     ($Unsigned:ident) => {
-        impl Unsigned for $Unsigned {
+        impl const Unsigned for $Unsigned {
             #[cfg_attr(feature = "no-panic", no_panic)]
             fn fmt(self, buf: &mut Self::Buffer) -> usize {
                 // Count the number of bytes in buf that are not initialized.
                 let mut offset = buf.len();
                 // Consume the least-significant decimals from a working copy.
                 let mut remain = self;
+
+                // Get a raw pointer to the start of the buffer for later use in writing pairs of digits.
+                let base = buf.as_mut_ptr();
 
                 if const { mem::size_of::<Self>() > 1 } {
                     // Format per four digits from the lookup table.
@@ -469,14 +490,18 @@ macro_rules! impl_Unsigned {
                         remain /= scale;
                         let (pair1, pair2) = divmod100(quad as u32);
                         unsafe {
-                            buf[offset + 0]
-                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
-                            buf[offset + 1]
-                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 1));
-                            buf[offset + 2]
-                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 0));
-                            buf[offset + 3]
-                                .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1));
+                            // Write the first pair of decimal digits into the buffer.
+                            copy_nonoverlapping(
+                                DECIMAL_PAIRS.get_pair(pair1 as usize),
+                                base.add(offset) as *mut [u8; 2],
+                                1,
+                            );
+                            // Write the second pair of decimal digits into the buffer.
+                            copy_nonoverlapping(
+                                DECIMAL_PAIRS.get_pair(pair2 as usize),
+                                base.add(offset + 2) as *mut [u8; 2],
+                                1,
+                            );
                         }
                     }
                 }
@@ -488,10 +513,11 @@ macro_rules! impl_Unsigned {
                     let (last, pair) = divmod100(remain as u32);
                     remain = last as Self;
                     unsafe {
-                        buf[offset + 0]
-                            .write(*DECIMAL_PAIRS.0.get_unchecked(pair as usize * 2 + 0));
-                        buf[offset + 1]
-                            .write(*DECIMAL_PAIRS.0.get_unchecked(pair as usize * 2 + 1));
+                        copy_nonoverlapping(
+                            DECIMAL_PAIRS.get_pair(pair as usize),
+                            base.add(offset) as *mut [u8; 2],
+                            1,
+                        );
                     }
                 }
 
@@ -517,9 +543,10 @@ impl_Unsigned!(u16);
 impl_Unsigned!(u32);
 impl_Unsigned!(u64);
 
-impl Unsigned for u128 {
+impl const Unsigned for u128 {
     #[cfg_attr(feature = "no-panic", no_panic)]
     fn fmt(self, buf: &mut Self::Buffer) -> usize {
+        let base = buf.as_mut_ptr();
         // Optimize common-case zero, which would also need special treatment due to
         // its "leading" zero.
         if self == 0 {
@@ -556,10 +583,21 @@ impl Unsigned for u128 {
             remain /= 1_00_00;
             let (pair1, pair2) = divmod100(quad as u32);
             unsafe {
-                buf[offset + 0].write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
+                /* buf[offset + 0].write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
                 buf[offset + 1].write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 1));
                 buf[offset + 2].write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 0));
-                buf[offset + 3].write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1));
+                buf[offset + 3].write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1)); */
+
+                copy_nonoverlapping(
+                    DECIMAL_PAIRS.get_pair(pair1 as usize),
+                    base.add(offset) as *mut [u8; 2],
+                    1,
+                );
+                copy_nonoverlapping(
+                    DECIMAL_PAIRS.get_pair(pair2 as usize),
+                    base.add(offset + 2) as *mut [u8; 2],
+                    1,
+                );
             }
         }
 
@@ -570,8 +608,14 @@ impl Unsigned for u128 {
             let (last, pair) = divmod100(remain as u32);
             remain = last as u64;
             unsafe {
-                buf[offset + 0].write(*DECIMAL_PAIRS.0.get_unchecked(pair as usize * 2 + 0));
-                buf[offset + 1].write(*DECIMAL_PAIRS.0.get_unchecked(pair as usize * 2 + 1));
+                /* buf[offset + 0].write(*DECIMAL_PAIRS.0.get_unchecked(pair as usize * 2 + 0));
+                buf[offset + 1].write(*DECIMAL_PAIRS.0.get_unchecked(pair as usize * 2 + 1)); */
+
+                copy_nonoverlapping(
+                    DECIMAL_PAIRS.get_pair(pair as usize),
+                    base.add(offset) as *mut [u8; 2],
+                    1,
+                );
             }
         }
 
@@ -591,35 +635,62 @@ impl Unsigned for u128 {
 
 // Encodes the 16 least-significant decimals of n into `buf[OFFSET..OFFSET + 16]`.
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn enc_16lsd<const OFFSET: usize>(buf: &mut [MaybeUninit<u8>], n: u64) {
+const fn enc_16lsd<const OFFSET: usize>(buf: &mut [MaybeUninit<u8>], n: u64) {
     // Consume the least-significant decimals from a working copy.
     let mut remain = n;
 
+    let base = buf.as_mut_ptr();
+
     // Format per four digits from the lookup table.
-    for quad_index in (1..4).rev() {
+    let mut i = 4;
+    while i > 1 {
+        i -= 1;
+        let quad_index = i - 1;
         // pull two pairs
         let quad = remain % 1_00_00;
         remain /= 1_00_00;
         let (pair1, pair2) = divmod100(quad as u32);
         unsafe {
-            buf[quad_index * 4 + OFFSET + 0]
+            copy_nonoverlapping(
+                DECIMAL_PAIRS.get_pair(pair1 as usize),
+                base.add(quad_index * 4 + OFFSET) as *mut [u8; 2],
+                1,
+            );
+            copy_nonoverlapping(
+                DECIMAL_PAIRS.get_pair(pair2 as usize),
+                base.add(quad_index * 4 + OFFSET + 2) as *mut [u8; 2],
+                1,
+            );
+
+            /* buf[quad_index * 4 + OFFSET + 0]
                 .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
             buf[quad_index * 4 + OFFSET + 1]
                 .write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 1));
             buf[quad_index * 4 + OFFSET + 2]
                 .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 0));
             buf[quad_index * 4 + OFFSET + 3]
-                .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1));
+                .write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1)); */
         }
     }
 
     // final two pairs
     let (pair1, pair2) = divmod100(remain as u32);
     unsafe {
-        buf[OFFSET + 0].write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
+        /* buf[OFFSET + 0].write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 0));
         buf[OFFSET + 1].write(*DECIMAL_PAIRS.0.get_unchecked(pair1 as usize * 2 + 1));
         buf[OFFSET + 2].write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 0));
-        buf[OFFSET + 3].write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1));
+        buf[OFFSET + 3].write(*DECIMAL_PAIRS.0.get_unchecked(pair2 as usize * 2 + 1)); */
+
+        copy_nonoverlapping(
+            DECIMAL_PAIRS.get_pair(pair1 as usize),
+            base.add(OFFSET) as *mut [u8; 2],
+            1,
+        );
+        copy_nonoverlapping(
+            DECIMAL_PAIRS.get_pair(pair2 as usize),
+            base.add(OFFSET + 2) as *mut [u8; 2],
+            1,
+        );
     }
 }
 
@@ -633,7 +704,7 @@ fn enc_16lsd<const OFFSET: usize>(buf: &mut [MaybeUninit<u8>], n: u64) {
 //   Implementation, 1994, pp. 61–72
 //
 #[cfg_attr(feature = "no-panic", no_panic)]
-fn div_rem_1e16(n: u128) -> (u128, u64) {
+const fn div_rem_1e16(n: u128) -> (u128, u64) {
     const D: u128 = 1_0000_0000_0000_0000;
     // The check inlines well with the caller flow.
     if n < D {
