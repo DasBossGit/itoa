@@ -10,7 +10,7 @@
     name          = "itoa"
     repository    = "https://github.com/dtolnay/itoa"
     rust-version  = "1.89"
-    version       = "1.3.1"
+    version       = "1.3.2"
 
 [dependencies]
     no-panic = { version = "0.1", optional = true }

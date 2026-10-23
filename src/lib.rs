@@ -243,7 +243,7 @@ macro_rules! impl_ge {
 }
 
 // i128::MAX_STR_LEN can hold every integer's string representation, thus this blanket implementation is sufficient for all integers.
-impl<I: const Integer> const SufficientBuffer<I> for i128 {}
+impl<I: Integer> const SufficientBuffer<I> for i128 {}
 impl_ge!(u128 [usize isize u128 u64 i64 u32 i32 u16 i16 u8 i8]);
 impl_ge!(i64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
 impl_ge!(u64 [#["64"] usize #["64"] isize u64 i64 u32 i32 u16 i16 u8 i8]);
